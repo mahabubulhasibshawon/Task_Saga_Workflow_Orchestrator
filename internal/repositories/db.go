@@ -2,21 +2,16 @@ package repositories
 
 import (
 	"database/sql"
-	"fmt"
-	"os"
+	"log"
 )
 
-func NewDB() (*sql.DB, error) {
-	dbURL := os.Getenv("DB_URL")
-	if dbURL == "" {
-		return nil, fmt.Errorf("DB_URL not set")
-	}
-	db, err := sql.Open("postgres", dbURL)
+func ConnectPostgres(dsn string) *sql.DB {
+	db, err := sql.Open("postgres", dsn)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to open DB: %w", err)
+		log.Fatalf("failed to connect to Postgres: %v", err)
 	}
 	if err := db.Ping(); err != nil {
-		return nil, fmt.Errorf("Failed to ping DB: %w", err)
+		log.Fatalf("failed to ping Postgres: %v", err)
 	}
-	return db, nil
+	return db
 }
