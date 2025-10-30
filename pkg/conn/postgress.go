@@ -1,8 +1,10 @@
-package repositories
+package conn
 
 import (
 	"database/sql"
 	"log"
+
+	_ "github.com/lib/pq"
 )
 
 func ConnectPostgres(dsn string) *sql.DB {
