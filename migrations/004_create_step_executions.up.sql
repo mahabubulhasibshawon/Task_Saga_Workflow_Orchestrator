@@ -1,10 +1,6 @@
--- +goose Up
 CREATE TABLE step_executions (
     id SERIAL PRIMARY KEY,
     dedupe_key VARCHAR(255) NOT NULL UNIQUE,
     result VARCHAR(50) NOT NULL,
     executed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-
--- +goose Down
-DROP TABLE step_executions;
