@@ -36,7 +36,7 @@ func SetFailureProbability(prob float64) {
 	failureProb.Store(prob)
 }
 
-func HandleTask(ctx context.Context, t *asynq.Task) error {
+func HandleStep(ctx context.Context, t *asynq.Task) error {
 	var payload queue.StepPayload
 	if err := json.Unmarshal(t.Payload(), &payload); err != nil {
 		return fmt.Errorf("failed to unmarshal step payload: %w", err)
@@ -82,7 +82,7 @@ func HandleTask(ctx context.Context, t *asynq.Task) error {
 	case domain.StepNotifyCustomer:
 		stepErr = mocks.NotifyCustomer(payload.OrderID)
 	default:
-		stepErr = fmt.Errorf("unknown step: %s", stepErr)
+		stepErr = fmt.Errorf("unknown step: %s", payload.Step)
 	}
 
 	result = "success"
@@ -102,6 +102,35 @@ func HandleTask(ctx context.Context, t *asynq.Task) error {
 	if err := usecases.NextStep(ctx, payload.OrderID, payload.Step); err != nil {
 		return fmt.Errorf("failed to enqueue next step: %w", err)
 	}
+	return nil
+}
+
+func HandleCompensation(ctx context.Context, t *asynq.Task) error {
+	var payload queue.StepPayload
+	if err := json.Unmarshal(t.Payload(), &payload); err != nil {
+		return fmt.Errorf("failed to unmarshal compensation payload: %w", err)
+	}
+	logger.Info("Processing compensation",
+		zap.String("order_id", payload.OrderID),
+		zap.String("compensation", string(payload.Step)),
+	)
+
+	var err error
+	switch domain.CompensationStep(payload.Step) {
+	case domain.CompReleaseSlot:
+		err = mocks.ReleaseSlot(payload.OrderID)
+	case domain.CompUnassignAgent:
+		err = mocks.UnassignAgent(ctx, payload.OrderID)
+	case domain.CompCancelNotification:
+		err = mocks.CancelNotification(payload.OrderID)
+	default:
+		fmt.Errorf("unknown compensation step: %s", payload.Step)
+	}
+
+	if err != nil {
+		return fmt.Errorf("compensation failed: %w", err)
+	}
+
 	return nil
 }
 
