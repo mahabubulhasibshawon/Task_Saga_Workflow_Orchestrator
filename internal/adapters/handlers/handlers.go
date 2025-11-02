@@ -9,6 +9,7 @@ import (
 
 	"github.com/hibiken/asynq"
 	"github.com/mahabubulhasibshawon/Task_Saga_Workflow_Orchestrator.git/config"
+	"github.com/mahabubulhasibshawon/Task_Saga_Workflow_Orchestrator.git/internal/adapters/metrics"
 	"github.com/mahabubulhasibshawon/Task_Saga_Workflow_Orchestrator.git/internal/adapters/queue"
 	"github.com/mahabubulhasibshawon/Task_Saga_Workflow_Orchestrator.git/internal/domain"
 	"github.com/mahabubulhasibshawon/Task_Saga_Workflow_Orchestrator.git/internal/repositories"
@@ -44,8 +45,7 @@ func HandleStep(ctx context.Context, t *asynq.Task) error {
 
 	logger.Info("Processing step",
 		zap.String("order_id", payload.OrderID),
-		zap.String("step", string(payload.Step)),
-	)
+		zap.String("step", string(payload.Step)))
 
 	cfg := config.Load()
 	db := conn.ConnectPostgres(cfg.DSN())
@@ -91,17 +91,22 @@ func HandleStep(ctx context.Context, t *asynq.Task) error {
 		if err := stepRepo.SaveExecution(ctx, dedupeKey, result); err != nil {
 			return fmt.Errorf("failed to save step execution: %w", err)
 		}
+		metrics.StepFailure.WithLabelValues(string(payload.Step)).Inc()
 		if err := usecases.Compensate(ctx, payload.OrderID, payload.Step); err != nil {
 			return fmt.Errorf("failed to compensate: %w", err)
 		}
 		return fmt.Errorf("step failed: %w", coalesceErr(stepErr, chaosErr))
 	}
+
 	if err := stepRepo.SaveExecution(ctx, dedupeKey, result); err != nil {
 		return fmt.Errorf("failed to save step execution: %w", err)
 	}
+
+	metrics.StepSuccess.WithLabelValues(string(payload.Step)).Inc()
 	if err := usecases.NextStep(ctx, payload.OrderID, payload.Step); err != nil {
 		return fmt.Errorf("failed to enqueue next step: %w", err)
 	}
+
 	return nil
 }
 
@@ -110,10 +115,10 @@ func HandleCompensation(ctx context.Context, t *asynq.Task) error {
 	if err := json.Unmarshal(t.Payload(), &payload); err != nil {
 		return fmt.Errorf("failed to unmarshal compensation payload: %w", err)
 	}
+
 	logger.Info("Processing compensation",
 		zap.String("order_id", payload.OrderID),
-		zap.String("compensation", string(payload.Step)),
-	)
+		zap.String("compensation", string(payload.Step)))
 
 	var err error
 	switch domain.CompensationStep(payload.Step) {
@@ -124,13 +129,15 @@ func HandleCompensation(ctx context.Context, t *asynq.Task) error {
 	case domain.CompCancelNotification:
 		err = mocks.CancelNotification(payload.OrderID)
 	default:
-		fmt.Errorf("unknown compensation step: %s", payload.Step)
+		err = fmt.Errorf("unknown compensation step: %s", payload.Step)
 	}
 
 	if err != nil {
+		metrics.CompensationTotal.WithLabelValues(string(payload.Step)).Inc()
 		return fmt.Errorf("compensation failed: %w", err)
 	}
 
+	metrics.CompensationTotal.WithLabelValues(string(payload.Step)).Inc()
 	return nil
 }
 
