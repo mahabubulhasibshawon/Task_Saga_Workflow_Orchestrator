@@ -9,6 +9,7 @@ import (
 	"github.com/hibiken/asynq"
 	"github.com/mahabubulhasibshawon/Task_Saga_Workflow_Orchestrator.git/config"
 	"github.com/mahabubulhasibshawon/Task_Saga_Workflow_Orchestrator.git/internal/adapters/queue"
+	"github.com/mahabubulhasibshawon/Task_Saga_Workflow_Orchestrator.git/internal/adapters/tracing"
 	"github.com/mahabubulhasibshawon/Task_Saga_Workflow_Orchestrator.git/internal/domain"
 	"github.com/mahabubulhasibshawon/Task_Saga_Workflow_Orchestrator.git/internal/repositories"
 	"github.com/mahabubulhasibshawon/Task_Saga_Workflow_Orchestrator.git/pkg/conn"
@@ -57,12 +58,15 @@ func StartWorkflow(ctx context.Context, orderID string) error {
 	client := queue.NewQueueClient()
 	defer client.Close()
 
+	spanCtx, span := tracing.Tracer.Start(ctx, "start_workflow")
+	defer span.End()
+
 	payload, err := json.Marshal(queue.StepPayload{OrderID: orderID, Step: domain.StepReserveSlot})
 	if err != nil {
 		return fmt.Errorf("failed to marshal payload: %w", err)
 	}
 	task := asynq.NewTask("step", payload)
-	if _, err := client.EnqueueContext(ctx, task); err != nil {
+	if _, err := client.EnqueueContext(spanCtx, task); err != nil {
 		return fmt.Errorf("failed to enqueue first step: %w", err)
 	}
 
@@ -73,12 +77,15 @@ func StartWorkflow(ctx context.Context, orderID string) error {
 }
 
 func NextStep(ctx context.Context, orderID string, currentStep domain.Step) error {
+	spanCtx, span := tracing.Tracer.Start(ctx, "next_step")
+	defer span.End()
+
     cfg := config.Load()
 	db := conn.ConnectPostgres(cfg.DSN())
 	defer db.Close()
 
     workflowRepo := repositories.NewWorkflowRepo(db)
-    state, err := workflowRepo.GetStateByOrderID(ctx, orderID)
+    state, err := workflowRepo.GetStateByOrderID(spanCtx, orderID)
     if err != nil {
         return fmt.Errorf("failed to get workflow state: %w", err)
     }
@@ -93,14 +100,14 @@ func NextStep(ctx context.Context, orderID string, currentStep domain.Step) erro
     case domain.StepAssignAgent:
         nextStep = domain.StepNotifyCustomer
     case domain.StepNotifyCustomer:
-        return MarkCompleted(ctx, orderID)
+        return MarkCompleted(spanCtx, orderID)
     default:
         return fmt.Errorf("unknown current step: %s", currentStep)
     }
 
     state.CurrentStep = nextStep
     state.UpdatedAt = time.Now()
-    if err := workflowRepo.SaveState(ctx, state); err != nil {
+    if err := workflowRepo.SaveState(spanCtx, state); err != nil {
         return fmt.Errorf("failed to update workflow state: %w", err)
     }
 
@@ -112,7 +119,7 @@ func NextStep(ctx context.Context, orderID string, currentStep domain.Step) erro
         return fmt.Errorf("failed to marshal payload: %w", err)
     }
     task := asynq.NewTask("step", payload)
-    if _, err := client.EnqueueContext(ctx, task); err != nil {
+    if _, err := client.EnqueueContext(spanCtx, task); err != nil {
         return fmt.Errorf("failed to enqueue step %s: %w", nextStep, err)
     }
 
@@ -123,6 +130,9 @@ func NextStep(ctx context.Context, orderID string, currentStep domain.Step) erro
 }
 
 func MarkCompleted(ctx context.Context, orderID string) error {
+	spanCtx, span := tracing.Tracer.Start(ctx, "mark_completed")
+    defer span.End()
+
 	cfg := config.Load()
 	db := conn.ConnectPostgres(cfg.DSN())
 	defer db.Close()
@@ -130,7 +140,7 @@ func MarkCompleted(ctx context.Context, orderID string) error {
 	orderRepo := repositories.NewOrderRepo(db)
 	workflowRepo := repositories.NewWorkflowRepo(db)
 
-	order, err := orderRepo.GetOrderByID(ctx, orderID)
+	order, err := orderRepo.GetOrderByID(spanCtx, orderID)
 	if err != nil {
 		return fmt.Errorf("failed to get order: %w",err)
 	}
@@ -139,11 +149,11 @@ func MarkCompleted(ctx context.Context, orderID string) error {
 	}
 	order.Status = "fulfilled"
     order.UpdatedAt = time.Now()
-    if err := orderRepo.SaveOrder(ctx, order); err != nil {
+    if err := orderRepo.SaveOrder(spanCtx, order); err != nil {
         return fmt.Errorf("failed to update order status: %w", err)
     }
 
-    workflow, err := workflowRepo.GetStateByOrderID(ctx, orderID)
+    workflow, err := workflowRepo.GetStateByOrderID(spanCtx, orderID)
     if err != nil {
         return fmt.Errorf("failed to get workflow state: %w", err)
     }
@@ -152,7 +162,7 @@ func MarkCompleted(ctx context.Context, orderID string) error {
     }
     workflow.Status = domain.StatusCompleted
     workflow.UpdatedAt = time.Now()
-    if err := workflowRepo.SaveState(ctx, workflow); err != nil {
+    if err := workflowRepo.SaveState(spanCtx, workflow); err != nil {
         return fmt.Errorf("failed to update workflow state: %w", err)
     }
 

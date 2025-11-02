@@ -11,6 +11,7 @@ import (
 	"github.com/mahabubulhasibshawon/Task_Saga_Workflow_Orchestrator.git/config"
 	"github.com/mahabubulhasibshawon/Task_Saga_Workflow_Orchestrator.git/internal/adapters/metrics"
 	"github.com/mahabubulhasibshawon/Task_Saga_Workflow_Orchestrator.git/internal/adapters/queue"
+	"github.com/mahabubulhasibshawon/Task_Saga_Workflow_Orchestrator.git/internal/adapters/tracing"
 	"github.com/mahabubulhasibshawon/Task_Saga_Workflow_Orchestrator.git/internal/domain"
 	"github.com/mahabubulhasibshawon/Task_Saga_Workflow_Orchestrator.git/internal/repositories"
 	"github.com/mahabubulhasibshawon/Task_Saga_Workflow_Orchestrator.git/internal/usecases"
@@ -43,6 +44,9 @@ func HandleStep(ctx context.Context, t *asynq.Task) error {
 		return fmt.Errorf("failed to unmarshal step payload: %w", err)
 	}
 
+	spanCtx, span := tracing.Tracer.Start(ctx, "handle_step."+string(payload.Step))
+	defer span.End()
+
 	logger.Info("Processing step",
 		zap.String("order_id", payload.OrderID),
 		zap.String("step", string(payload.Step)))
@@ -53,7 +57,7 @@ func HandleStep(ctx context.Context, t *asynq.Task) error {
 
 	stepRepo := repositories.NewStepExecutionRepo(db)
 	dedupeKey := fmt.Sprintf("%s_%s", payload.OrderID, payload.Step)
-	executed, result, err := stepRepo.IsExecuted(ctx, dedupeKey)
+	executed, result, err := stepRepo.IsExecuted(spanCtx, dedupeKey)
 	if err != nil {
 		return fmt.Errorf("failed to check step execution: %w", err)
 	}
@@ -63,7 +67,7 @@ func HandleStep(ctx context.Context, t *asynq.Task) error {
 			zap.String("step", string(payload.Step)),
 			zap.String("result", result))
 		if result == "success" {
-			return usecases.NextStep(ctx, payload.OrderID, payload.Step)
+			return usecases.NextStep(spanCtx, payload.OrderID, payload.Step)
 		}
 		return fmt.Errorf("step previously failed: %s", result)
 	}
@@ -78,7 +82,7 @@ func HandleStep(ctx context.Context, t *asynq.Task) error {
 	case domain.StepReserveSlot:
 		_, stepErr = mocks.ReserveSlot(payload.OrderID)
 	case domain.StepAssignAgent:
-		_, stepErr = mocks.AssignAgent(ctx, payload.OrderID)
+		_, stepErr = mocks.AssignAgent(spanCtx, payload.OrderID)
 	case domain.StepNotifyCustomer:
 		stepErr = mocks.NotifyCustomer(payload.OrderID)
 	default:
@@ -88,22 +92,22 @@ func HandleStep(ctx context.Context, t *asynq.Task) error {
 	result = "success"
 	if stepErr != nil || chaosErr != nil {
 		result = "failed"
-		if err := stepRepo.SaveExecution(ctx, dedupeKey, result); err != nil {
+		if err := stepRepo.SaveExecution(spanCtx, dedupeKey, result); err != nil {
 			return fmt.Errorf("failed to save step execution: %w", err)
 		}
 		metrics.StepFailure.WithLabelValues(string(payload.Step)).Inc()
-		if err := usecases.Compensate(ctx, payload.OrderID, payload.Step); err != nil {
+		if err := usecases.Compensate(spanCtx, payload.OrderID, payload.Step); err != nil {
 			return fmt.Errorf("failed to compensate: %w", err)
 		}
 		return fmt.Errorf("step failed: %w", coalesceErr(stepErr, chaosErr))
 	}
 
-	if err := stepRepo.SaveExecution(ctx, dedupeKey, result); err != nil {
+	if err := stepRepo.SaveExecution(spanCtx, dedupeKey, result); err != nil {
 		return fmt.Errorf("failed to save step execution: %w", err)
 	}
 
 	metrics.StepSuccess.WithLabelValues(string(payload.Step)).Inc()
-	if err := usecases.NextStep(ctx, payload.OrderID, payload.Step); err != nil {
+	if err := usecases.NextStep(spanCtx, payload.OrderID, payload.Step); err != nil {
 		return fmt.Errorf("failed to enqueue next step: %w", err)
 	}
 
@@ -116,6 +120,9 @@ func HandleCompensation(ctx context.Context, t *asynq.Task) error {
 		return fmt.Errorf("failed to unmarshal compensation payload: %w", err)
 	}
 
+	spanCtx, span := tracing.Tracer.Start(ctx, "handle_compensation."+string(payload.Step))
+	defer span.End()
+
 	logger.Info("Processing compensation",
 		zap.String("order_id", payload.OrderID),
 		zap.String("compensation", string(payload.Step)))
@@ -125,7 +132,7 @@ func HandleCompensation(ctx context.Context, t *asynq.Task) error {
 	case domain.CompReleaseSlot:
 		err = mocks.ReleaseSlot(payload.OrderID)
 	case domain.CompUnassignAgent:
-		err = mocks.UnassignAgent(ctx, payload.OrderID)
+		err = mocks.UnassignAgent(spanCtx, payload.OrderID)
 	case domain.CompCancelNotification:
 		err = mocks.CancelNotification(payload.OrderID)
 	default:
