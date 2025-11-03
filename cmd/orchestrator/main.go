@@ -10,19 +10,13 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mahabubulhasibshawon/Task_Saga_Workflow_Orchestrator.git/config"
 	"github.com/mahabubulhasibshawon/Task_Saga_Workflow_Orchestrator.git/internal/adapters/handlers"
 	"github.com/mahabubulhasibshawon/Task_Saga_Workflow_Orchestrator.git/internal/adapters/metrics"
 	"github.com/mahabubulhasibshawon/Task_Saga_Workflow_Orchestrator.git/internal/adapters/queue"
 	"github.com/mahabubulhasibshawon/Task_Saga_Workflow_Orchestrator.git/internal/adapters/tracing"
-	"github.com/mahabubulhasibshawon/Task_Saga_Workflow_Orchestrator.git/pkg/conn"
 )
 
 func main() {
-	cfg := config.Load()
-	db := conn.ConnectPostgres(cfg.DSN())
-	defer db.Close()
-
 	injectFailure := flag.Float64("inject-failure", 0.0, "Probability of injected failure (0.0 to 1.0)")
 	flag.Parse()
 
